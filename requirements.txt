@@ -1,0 +1,12 @@
+streamlit
+Pillow
+pytesseract
+transformers
+torch
+python-dotenv
+langchain-google-genai
+langchain-core
+googletrans
+gtts
+ipython
+langchain-community
