@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image
 import pytesseract
-from transformers import SegformerImageProcessor, SegformerForImageClassification
+from transformers import SegformerFeatureExtractor, SegformerForImageClassification
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
