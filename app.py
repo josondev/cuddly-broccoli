@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image
 import pytesseract
-from transformers import SegformerFeatureExtractor, SegformerForImageClassification
+from transformers import SegformerImageProcessor, SegformerForImageClassification
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -75,7 +75,7 @@ def process_image(image, method="basic"):
 def load_segformer():
     """Load Segformer model and processor"""
     try:
-        processor = SegformerFeatureExtractor.from_pretrained(
+        processor = SegformerImageProcessor.from_pretrained(
             "nvidia/segformer-b0-finetuned-ade-512-512"
         )
         model = SegformerForImageClassification.from_pretrained(
