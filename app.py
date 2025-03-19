@@ -1,7 +1,7 @@
 import streamlit as st
 from PIL import Image
 import pytesseract
-from transformers import SegformerImageProcessor, SegformerForImageClassification
+from transformers import AutoImageProcessor, AutoModelForImageClassification  # Updated imports
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -10,11 +10,13 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from gtts import gTTS
 from googletrans import Translator
-from IPython.display import Audio
 from io import BytesIO
 import os
 import base64
 import traceback
+import time
+import asyncio
+
 
 # Load environment variables
 load_dotenv()
@@ -75,10 +77,12 @@ def process_image(image, method="basic"):
 def load_segformer():
     """Load Segformer model and processor"""
     try:
-        processor = SegformerImageProcessor.from_pretrained(
+        # Updated to use AutoImageProcessor instead of SegformerImageProcessor
+        processor = AutoImageProcessor.from_pretrained(
             "nvidia/segformer-b0-finetuned-ade-512-512"
         )
-        model = SegformerForImageClassification.from_pretrained(
+        # Updated to use AutoModelForImageClassification instead of SegformerForImageClassification
+        model = AutoModelForImageClassification.from_pretrained(
             "nvidia/segformer-b0-finetuned-ade-512-512"
         )
         return processor, model
@@ -145,7 +149,6 @@ def analyze_image_content(image, question="What is shown in this image?", target
             ]
         }
         
-        st.info("Sending request to Gemini...")
         response = model.invoke(input=[message])
         
         # Clean up response
@@ -186,54 +189,53 @@ def get_language_menu():
         'Chinese': 'zh-CN'
     }
 
+
+
 def translate_text(text, target_language_code):
     """Translate text with improved error handling"""
     if not text or text.strip() == "" or target_language_code == 'en':
         return text
-        
+
     try:
-        import time
-        time.sleep(0.5)
-        
         translator = Translator()
-        st.session_state.translation_attempts = st.session_state.get('translation_attempts', 0) + 1
-        
         chunks = [text[i:i+300] for i in range(0, len(text), 300)]
         translated_chunks = []
-        
+
         for i, chunk in enumerate(chunks):
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     if attempt > 0:
                         time.sleep(2)
+
+                    print(f"Attempt {attempt+1}: Translating chunk {i+1}/{len(chunks)}")
                     
-                    if len(chunks) > 1:
-                        st.info(f"Translating chunk {i+1}/{len(chunks)} (attempt {attempt+1})")
+                    translation = translator.translate(chunk, dest=target_language_code, src='en')
+                    print(f"Translation type: {type(translation)}")  # Debugging
                     
-                    translation = translator.translate(
-                        text=chunk,
-                        dest=target_language_code,
-                        src='en'
-                    )
-                    
-                    if translation and translation.text:
+                    # If `translation` is a coroutine, wait for result
+                    if asyncio.iscoroutine(translation):
+                        translation = asyncio.run(translation)
+                        print(f"Coroutine awaited. New Type: {type(translation)}")  # Debugging
+
+                    if hasattr(translation, 'text'):
                         translated_chunks.append(translation.text)
                         break
                     else:
-                        if attempt == max_retries - 1:
-                            st.warning(f"Failed to translate chunk after {max_retries} attempts")
+                        print("Translation failed: No `.text` attribute")
                         time.sleep(1)
+
                 except Exception as chunk_error:
-                    if attempt == max_retries - 1:
-                        st.warning(f"Translation error on attempt {attempt+1}: {str(chunk_error)}")
+                    print(f"Translation error on attempt {attempt+1}: {str(chunk_error)}")
                     time.sleep(1.5)
-        
+
         return ' '.join(translated_chunks) if translated_chunks else text
-            
+
     except Exception as e:
-        st.error(f"Translation error: {str(e)}")
+        print(f"Translation error: {str(e)}")
         return text
+
+
 
 def main():
     st.set_page_config(page_title="OCR Tool", page_icon="📝", layout="wide")
