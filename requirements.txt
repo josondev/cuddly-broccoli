@@ -10,3 +10,5 @@ googletrans
 gtts
 ipython
 langchain-community
+huggingface_hub
+docling-core
