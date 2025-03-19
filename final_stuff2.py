@@ -5,6 +5,7 @@ import time
 import torch
 from io import BytesIO
 import base64
+import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from googletrans import Translator
@@ -54,6 +55,9 @@ if 'camera_has_processed' not in st.session_state:
     st.session_state.camera_has_processed = False
 if 'camera_image_hash' not in st.session_state:
     st.session_state.camera_image_hash = None
+# Add translation cache to avoid repeated translations
+if 'translation_cache' not in st.session_state:
+    st.session_state.translation_cache = {}
 
 def check_dependencies():
     """Check for missing dependencies"""
@@ -262,34 +266,43 @@ def translate_text(text, target_language_code):
 
     try:
         translator = Translator()
-        # Split text into smaller chunks to avoid translation errors
-        chunks = [text[i:i+500] for i in range(0, len(text), 500)]
+        chunks = [text[i:i+300] for i in range(0, len(text), 300)]
         translated_chunks = []
 
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     if attempt > 0:
-                        time.sleep(1.5)  # Wait between retries
+                        time.sleep(2)
+
+                    print(f"Attempt {attempt+1}: Translating chunk {i+1}/{len(chunks)}")
                     
                     translation = translator.translate(chunk, dest=target_language_code, src='en')
+                    print(f"Translation type: {type(translation)}")  # Debugging
                     
+                    # If `translation` is a coroutine, wait for result
+                    if asyncio.iscoroutine(translation):
+                        translation = asyncio.run(translation)
+                        print(f"Coroutine awaited. New Type: {type(translation)}")  # Debugging
+
                     if hasattr(translation, 'text'):
                         translated_chunks.append(translation.text)
                         break
                     else:
-                        # If translation failed, continue to retry
-                        continue
+                        print("Translation failed: No `.text` attribute")
+                        time.sleep(1)
 
-                except Exception:
-                    time.sleep(1)  # Wait after error
+                except Exception as chunk_error:
+                    print(f"Translation error on attempt {attempt+1}: {str(chunk_error)}")
+                    time.sleep(1.5)
 
         return ' '.join(translated_chunks) if translated_chunks else text
 
     except Exception as e:
-        st.error(f"Translation error: {str(e)}")
+        print(f"Translation error: {str(e)}")
         return text
+
 
 def generate_audio(text, language_code='en'):
     """Generate audio from text"""
@@ -359,6 +372,20 @@ def main():
             options=list(languages.keys()),
             index=list(languages.keys()).index('English')
         )
+        
+        # Add a translation button in sidebar for always-available translation
+        if st.session_state.extracted_text and selected_language != "English":
+            if st.button("Translate Current Text", key="sidebar_translate"):
+                with st.spinner(f"Translating to {selected_language}..."):
+                    translated_text = translate_text(
+                        st.session_state.extracted_text, 
+                        languages[selected_language]
+                    )
+                    if translated_text:
+                        st.session_state.translated_text = translated_text
+                        st.success(f"Text translated to {selected_language}")
+                        st.session_state.current_language = selected_language
+                        st.rerun()
     
     # Main content area
     if use_camera:
@@ -379,6 +406,10 @@ def main():
                 with col2:
                     question = st.text_input("Ask about the image:", "What is shown in this image?")
                     
+                    # Store the selected language for this analysis
+                    if 'current_language' not in st.session_state or st.session_state.current_language != selected_language:
+                        st.session_state.current_language = selected_language
+                    
                     if st.button("Analyze Image"):
                         # Only run the analysis if it's a new image or hasn't been processed
                         if is_new_image or not st.session_state.camera_has_processed:
@@ -393,56 +424,90 @@ def main():
                                     st.markdown("### 🔍 Analysis (English):")
                                     st.write(analysis)
                                     
-                                    tts_text = analysis
-                                    
+                                    # Always translate when a non-English language is selected
                                     if selected_language != "English":
                                         with st.spinner(f"Translating to {selected_language}..."):
                                             translated_analysis = translate_text(analysis, languages[selected_language])
                                             if translated_analysis:
+                                                st.session_state.translated_text = translated_analysis
                                                 st.markdown(f"### 🌐 Analysis in {selected_language}:")
                                                 st.write(translated_analysis)
-                                                tts_text = translated_analysis
-                                    
-                                    audio_data = generate_audio(tts_text, languages[selected_language])
-                                    if audio_data:
-                                        st.markdown("### 🔊 Text-to-Speech")
-                                        st.audio(audio_data, format='audio/mp3')
-                                        
-                                        st.download_button(
-                                            label="💾 Download Audio",
-                                            data=audio_data,
-                                            file_name=f"analysis_{selected_language}.mp3",
-                                            mime="audio/mp3"
-                                        )
+                                                
+                                                # Generate audio with translated text
+                                                audio_data = generate_audio(translated_analysis, languages[selected_language])
+                                                if audio_data:
+                                                    st.markdown("### 🔊 Text-to-Speech")
+                                                    st.audio(audio_data, format='audio/mp3')
+                                                    
+                                                    st.download_button(
+                                                        label="💾 Download Audio",
+                                                        data=audio_data,
+                                                        file_name=f"analysis_{selected_language}.mp3",
+                                                        mime="audio/mp3"
+                                                    )
+                                    else:
+                                        # English audio
+                                        audio_data = generate_audio(analysis, 'en')
+                                        if audio_data:
+                                            st.markdown("### 🔊 Text-to-Speech")
+                                            st.audio(audio_data, format='audio/mp3')
+                                            
+                                            st.download_button(
+                                                label="💾 Download Audio",
+                                                data=audio_data,
+                                                file_name="analysis_en.mp3",
+                                                mime="audio/mp3"
+                                            )
                         else:
                             # Just display the previously processed results
                             st.markdown("### 🔍 Analysis (English):")
                             st.write(st.session_state.extracted_text)
                             
-                            tts_text = st.session_state.extracted_text
-                            
+                            # Check if we need to translate or use cached translation
                             if selected_language != "English":
-                                with st.spinner(f"Translating to {selected_language}..."):
-                                    translated_analysis = translate_text(st.session_state.extracted_text, languages[selected_language])
-                                    if translated_analysis:
-                                        st.markdown(f"### 🌐 Analysis in {selected_language}:")
-                                        st.write(translated_analysis)
-                                        tts_text = translated_analysis
-                            
-                            # Generate audio from cached results
-                            audio_data = generate_audio(tts_text, languages[selected_language])
-                            if audio_data:
-                                st.markdown("### 🔊 Text-to-Speech")
-                                st.audio(audio_data, format='audio/mp3')
+                                # If language changed or no translation available, translate again
+                                if 'translated_text' not in st.session_state or 'current_language' not in st.session_state or st.session_state.current_language != selected_language:
+                                    with st.spinner(f"Translating to {selected_language}..."):
+                                        translated_analysis = translate_text(st.session_state.extracted_text, languages[selected_language])
+                                        if translated_analysis:
+                                            st.session_state.translated_text = translated_analysis
+                                            st.session_state.current_language = selected_language
+                                else:
+                                    translated_analysis = st.session_state.translated_text
                                 
-                                st.download_button(
-                                    label="💾 Download Audio",
-                                    data=audio_data,
-                                    file_name=f"analysis_{selected_language}.mp3",
-                                    mime="audio/mp3"
-                                )
+                                # Display the translation
+                                st.markdown(f"### 🌐 Analysis in {selected_language}:")
+                                st.write(translated_analysis)
+                                
+                                # Generate audio with translated text
+                                audio_data = generate_audio(translated_analysis, languages[selected_language])
+                                if audio_data:
+                                    st.markdown("### 🔊 Text-to-Speech")
+                                    st.audio(audio_data, format='audio/mp3')
+                                    
+                                    st.download_button(
+                                        label="💾 Download Audio",
+                                        data=audio_data,
+                                        file_name=f"analysis_{selected_language}.mp3",
+                                        mime="audio/mp3"
+                                    )
+                            else:
+                                # English audio
+                                audio_data = generate_audio(st.session_state.extracted_text, 'en')
+                                if audio_data:
+                                    st.markdown("### 🔊 Text-to-Speech")
+                                    st.audio(audio_data, format='audio/mp3')
+                                    
+                                    st.download_button(
+                                        label="💾 Download Audio",
+                                        data=audio_data,
+                                        file_name="analysis_en.mp3",
+                                        mime="audio/mp3"
+                                    )
             except Exception as e:
                 st.error(f"Error processing camera image: {str(e)}")
+                import traceback
+                st.error(traceback.format_exc())
     
     # File upload
     uploaded_file = st.file_uploader(
@@ -467,6 +532,10 @@ def main():
                 st.image(image, caption="Uploaded Image", use_container_width=True)
             
             with col2:
+                # Store the selected language for this analysis
+                if 'current_language' not in st.session_state or st.session_state.current_language != selected_language:
+                    st.session_state.current_language = selected_language
+                
                 # Only process if it's a new image or hasn't been processed before
                 if new_image or not st.session_state.has_processed:
                     with st.spinner("Processing with SmolDocling..."):
@@ -488,6 +557,22 @@ def main():
                             )
                             
                             st.success(f"Processing completed in {processing_time:.2f} seconds")
+                            
+                            # Translate if a non-English language is selected
+                            if selected_language != "English":
+                                with st.spinner(f"Translating to {selected_language}..."):
+                                    translated_text = translate_text(md_content, languages[selected_language])
+                                    if translated_text:
+                                        st.session_state.translated_text = translated_text
+                                        st.markdown(f"### 🌐 Results in {selected_language}:")
+                                        st.markdown(translated_text)
+                                        
+                                        st.download_button(
+                                            label=f"💾 Download {selected_language} Text",
+                                            data=translated_text,
+                                            file_name=f"translated_results_{selected_language}.txt",
+                                            mime="text/plain"
+                                        )
                 else:
                     # Just display the previously processed results
                     st.markdown("### 📄 SmolDocling Results:")
@@ -499,33 +584,42 @@ def main():
                         file_name="docling_results.md",
                         mime="text/markdown"
                     )
+                    
+                    # Check if we need to translate or use cached translation
+                    if selected_language != "English":
+                        # If language changed or no translation available, translate again
+                        if 'translated_text' not in st.session_state or 'current_language' not in st.session_state or st.session_state.current_language != selected_language:
+                            with st.spinner(f"Translating to {selected_language}..."):
+                                translated_text = translate_text(st.session_state.extracted_text, languages[selected_language])
+                                if translated_text:
+                                    st.session_state.translated_text = translated_text
+                                    st.session_state.current_language = selected_language
+                        else:
+                            translated_text = st.session_state.translated_text
+                        
+                        # Display the translation
+                        st.markdown(f"### 🌐 Results in {selected_language}:")
+                        st.markdown(translated_text)
+                        
+                        st.download_button(
+                            label=f"💾 Download {selected_language} Text",
+                            data=translated_text,
+                            file_name=f"translated_results_{selected_language}.txt",
+                            mime="text/plain"
+                        )
             
-            # Text-to-speech and translation section
+            # Text-to-speech section
             if st.session_state.extracted_text:
                 st.markdown("---")
-                st.markdown("### 🔊 Text-to-Speech & Translation")
+                st.markdown("### 🔊 Text-to-Speech")
                 
-                text_to_process = st.session_state.extracted_text
+                # Determine which text to use for TTS
+                if selected_language != "English" and 'translated_text' in st.session_state:
+                    text_to_process = st.session_state.translated_text
+                else:
+                    text_to_process = st.session_state.extracted_text
                 
-                # Translate if needed
-                if selected_language != "English":
-                    with st.spinner(f"Translating to {selected_language}..."):
-                        translated_text = translate_text(text_to_process, languages[selected_language])
-                        if translated_text:
-                            st.markdown(f"### 🌐 Text in {selected_language}:")
-                            st.text_area("Translated Results", translated_text, height=250)
-                            
-                            st.download_button(
-                                label=f"💾 Download {selected_language} Text",
-                                data=translated_text,
-                                file_name=f"translated_results_{selected_language}.txt",
-                                mime="text/plain"
-                            )
-                            
-                            # Use translated text for TTS
-                            text_to_process = translated_text
-                
-                # Generate audio
+                # Generate audio button
                 if st.button("Generate Audio"):
                     with st.spinner("Generating audio..."):
                         audio_data = generate_audio(
@@ -551,7 +645,21 @@ def main():
                 if st.session_state.chat_history and st.session_state.chat_history.messages:
                     for message in st.session_state.chat_history.messages:
                         role = "🤖 Assistant" if "AI" in str(type(message)) else "👤 You"
-                        st.write(f"**{role}:** {message.content}")
+                        content = message.content
+                        
+                        # Translate assistant responses if needed
+                        if role == "🤖 Assistant" and selected_language != "English":
+                            content_key = f"{hash(content)}_{languages[selected_language]}"
+                            if content_key in st.session_state.translation_cache:
+                                content = st.session_state.translation_cache[content_key]
+                            else:
+                                with st.spinner(f"Translating to {selected_language}..."):
+                                    translated_content = translate_text(content, languages[selected_language])
+                                    if translated_content:
+                                        content = translated_content
+                                        st.session_state.translation_cache[content_key] = translated_content
+                        
+                        st.write(f"**{role}:** {content}")
                 
                 # User input
                 user_input = st.text_input("Ask about the extracted text:", key="chat_input")
