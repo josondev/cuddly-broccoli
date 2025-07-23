@@ -12,3 +12,6 @@ ipython
 langchain-community
 huggingface_hub
 docling-core
+tesseract-ocr
+libtesseract-dev
+tesseract-ocr-eng
